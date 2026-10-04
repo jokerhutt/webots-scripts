@@ -1,0 +1,28 @@
+# CLion / CMake build dirs
+cmake-build-*/
+build/
+out/
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# JetBrains IDE (keep shared project settings if you want, ignore user-specific)
+.idea/
+*.iml
+
+# Compiled controller binary (Webots names it after the folder)
+diff_drive_controller
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.exe
+*.d
+
+# macOS
+.DS_Store
