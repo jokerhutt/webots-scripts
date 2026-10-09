@@ -4,7 +4,10 @@ set(CMAKE_CXX_STANDARD 17)
 
 set(WEBOTS_HOME "/Applications/Webots.app/Contents")
 
-add_executable(my_robot main.cpp)
+add_executable(my_robot main.cpp
+        config.hpp
+        robot_hardware.hpp
+        robot_hardware.cpp)
 target_include_directories(my_robot PRIVATE
         ${WEBOTS_HOME}/include/controller/cpp
         ${WEBOTS_HOME}/include/controller/c)

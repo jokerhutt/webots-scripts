@@ -1,14 +1,14 @@
-#include <webots/Motor.hpp>
+// webots
 #include <webots/Robot.hpp>
-#include <webots/PositionSensor.hpp>
 #include <webots/DistanceSensor.hpp>
-#include <iostream>
 
-#define TIME_STEP 64
-#define MAX_SPEED 10.0
-#define COLLISION_DISTANCE 0.20
-#define TURN_STEPS 12
-#define STOP_STEPS 5
+// stdlib
+#include <iostream>
+#include <cmath>
+
+// own headers
+#include "config.hpp"
+#include "robot_hardware.hpp"
 
 using namespace webots;
 
@@ -16,117 +16,188 @@ double getWallDistance(const DistanceSensor* sensor, const double offset = 0.0) 
     return sensor->getValue() + offset;
 }
 
-bool collidesWithWall(const double distance, const double maxDistance) {
-    return distance < maxDistance;
+double getDistanceTravelled(const RobotSensors& sensors) {
+    double leftRotation = sensors.encLF->getValue();
+    double rightRotation = sensors.encRF->getValue();
+
+    return (leftRotation + rightRotation) / 2.0 * WHEEL_RADIUS;
 }
 
-enum class RobotDirection {
-    Forward,
-    TurnLeft,
-    TurnRight,
-    Back,
-    Stop
+double calculateWallCorrection(double wallDistance) {
+    double error = wallDistance - TARGET_WALL_DISTANCE;
+    return WALL_KP * error;
+}
+
+void setMotorSpeeds(
+    const RobotMotors& motors,
+    double leftSpeed,
+    double rightSpeed
+) {
+    motors.leftFront->setVelocity(leftSpeed);
+    motors.leftBack->setVelocity(leftSpeed);
+
+    motors.rightFront->setVelocity(rightSpeed);
+    motors.rightBack->setVelocity(rightSpeed);
+}
+
+enum class RobotState {
+    DRIVING,
+    TURNING_RIGHT,
+    TURNING_LEFT,
+    PREPARING_RIGHT_TURN,
+    TURNING_AROUND,
+    BRAKING,
+    STOPPED,
 };
 
-RobotDirection decideDirection(
-    const double distFront,
-    const double collisionDistance,
-    int& stopStepsLeft,
-    int& turnStepsLeft
-) {
-    if (stopStepsLeft > 0) {
-        stopStepsLeft--;
-        return RobotDirection::Stop;
+struct RobotContext {
+    RobotState state = RobotState::DRIVING;
+    RobotState nextState = RobotState::DRIVING;
+    double stateStartTime = 0.0;
+    double stateStartDistance = 0.0;
+    double targetHeading = 0.0;
+};
+
+void updateState(Robot* robot, RobotContext* robotContext, RobotSensors sensors, double distanceTravelled) {
+    double distRight = getWallDistance(sensors.right, 0.02);
+    double distFront = getWallDistance(sensors.front, 0.02);
+    double distLeft = getWallDistance(sensors.left, 0.02);
+
+    switch (robotContext->state) {
+
+        // if driving
+        case RobotState::DRIVING:
+            // if no wall to the right
+            if (distRight > COLLISION_DISTANCE) {
+                robotContext->state = RobotState::PREPARING_RIGHT_TURN;
+                robotContext->stateStartTime = distanceTravelled;
+                // else if wall in front
+            } else if (distFront < COLLISION_DISTANCE) {
+                robotContext->state = RobotState::BRAKING;
+                // if no wall to left
+                if (distLeft > COLLISION_DISTANCE) {
+                    robotContext->nextState = RobotState::TURNING_LEFT;
+                    // else turn around
+                } else {
+                    robotContext->nextState = RobotState::TURNING_AROUND;
+                }
+                robotContext->stateStartTime = robot->getTime();
+            }
+            break;
+
+        case RobotState::BRAKING:
+            // if half a second has passed
+            if (robot->getTime() - robotContext->stateStartTime >= 0.5) {
+                double heading = sensors.imu->getRollPitchYaw()[2];
+
+                switch (robotContext->nextState) {
+                    case RobotState::TURNING_RIGHT:
+                        robotContext->targetHeading = heading - M_PI / 2.0;
+                        break;
+
+                    case RobotState::TURNING_LEFT:
+                        robotContext->targetHeading = heading + M_PI / 2.0;
+                        break;
+
+                    case RobotState::TURNING_AROUND:
+                        robotContext->targetHeading = heading + M_PI;
+                        break;
+
+                    default:
+                        break;
+                }
+
+                robotContext->state = robotContext->nextState;
+            }
+            break;
+
+        case RobotState::PREPARING_RIGHT_TURN:
+            if (distanceTravelled - robotContext->stateStartDistance >= 0.05) {
+                robotContext->state = RobotState::BRAKING;
+                robotContext->nextState = RobotState::TURNING_RIGHT;
+                robotContext->stateStartTime = robot->getTime();
+            }
+            break;
+
+        case RobotState::TURNING_LEFT:
+        case RobotState::TURNING_RIGHT:
+
+        case RobotState::TURNING_AROUND: {
+            double currentHeading = sensors.imu->getRollPitchYaw()[2];
+            double headingError = std::remainder(
+                robotContext->targetHeading - currentHeading,
+                2.0 * M_PI
+            );
+
+            if (std::abs(headingError) < 0.03) {
+                robotContext->state = RobotState::DRIVING;
+            }
+            break;
+        }
+
+        case RobotState::STOPPED:
+            break;
+        }
     }
 
-    if (turnStepsLeft > 0) {
-        turnStepsLeft--;
-        return RobotDirection::TurnRight;
-    }
+void executeState(const RobotContext& context, const RobotSensors& sensors, const RobotMotors& motors) {
+    switch (context.state) {
 
-    if (collidesWithWall(distFront, collisionDistance)) {
-        stopStepsLeft = STOP_STEPS;
-        turnStepsLeft = TURN_STEPS;
-        return RobotDirection::Stop;
-    }
+        case RobotState::DRIVING: {
+            double distRight = getWallDistance(sensors.right, 0.02);
+            double correction = calculateWallCorrection(distRight);
 
-    return RobotDirection::Forward;
+            setMotorSpeeds(
+                motors,
+                std::clamp(BASE_SPEED + correction, 0.0, MAX_SPEED),
+                std::clamp(BASE_SPEED - correction, 0.0, MAX_SPEED)
+            );
+            break;
+        }
+
+        case RobotState::BRAKING:
+            setMotorSpeeds(motors, 0.0, 0.0);
+            break;
+
+        case RobotState::STOPPED:
+            setMotorSpeeds(motors, 0.0, 0.0);
+            break;
+
+        case RobotState::PREPARING_RIGHT_TURN:
+            setMotorSpeeds(motors, BASE_SPEED, BASE_SPEED);
+            break;
+
+        case RobotState::TURNING_RIGHT:
+            setMotorSpeeds(motors, TURN_SPEED, -TURN_SPEED);
+            break;
+
+        case RobotState::TURNING_LEFT:
+            setMotorSpeeds(motors, -TURN_SPEED, TURN_SPEED);
+            break;
+
+        case RobotState::TURNING_AROUND:
+            setMotorSpeeds(motors, -TURN_SPEED, TURN_SPEED);
+            break;
+    }
 }
 
-void moveRobot(
-    const RobotDirection direction,
-    Motor* leftBackMotor,
-    Motor* rightBackMotor,
-    Motor* rightFrontMotor,
-    Motor* leftFrontMotor,
-    const double speed
-) {
-    double left = 0.0;
-    double right = 0.0;
-
-    switch (direction) {
-        case RobotDirection::Forward:   left =  speed; right =  speed; break;
-        case RobotDirection::Back:      left = -speed; right = -speed; break;
-        case RobotDirection::TurnLeft:  left = -speed; right =  speed; break;
-        case RobotDirection::TurnRight: left =  speed; right = -speed; break;
-        case RobotDirection::Stop:      left =  0.0;   right =  0.0;   break;
-    }
-
-    leftBackMotor->setVelocity(left);
-    leftFrontMotor->setVelocity(left);
-    rightBackMotor->setVelocity(right);
-    rightFrontMotor->setVelocity(right);
-}
 
 int main(int argc, char **argv) {
-    Robot *robot = new Robot();
 
-    Motor *leftBackMotor = robot->getMotor("motor_1");
-    Motor *rightBackMotor = robot->getMotor("motor_2");
-    Motor *rightFrontMotor = robot->getMotor("motor_3");
-    Motor *leftFrontMotor = robot->getMotor("motor_4");
+    // hardware setup
+    Robot* robot = initializeRobot();
+    RobotMotors robotMotors = initializeMotors(robot);
+    RobotSensors robotSensors = initializeSensors(robot);
 
-    leftBackMotor->setPosition(INFINITY);
-    rightBackMotor->setPosition(INFINITY);
-    rightFrontMotor->setPosition(INFINITY);
-    leftFrontMotor->setPosition(INFINITY);
-
-    leftBackMotor->setVelocity(0.0);
-    rightBackMotor->setVelocity(0.0);
-    rightFrontMotor->setVelocity(0.0);
-    leftFrontMotor->setVelocity(0.0);
-
-    PositionSensor* encLB = robot->getPositionSensor("encoder_1");
-    PositionSensor* encRB = robot->getPositionSensor("encoder_2");
-    PositionSensor* encRF = robot->getPositionSensor("encoder_3");
-    PositionSensor* encLF = robot->getPositionSensor("encoder_4");
-    encLB->enable(TIME_STEP);
-    encRB->enable(TIME_STEP);
-    encRF->enable(TIME_STEP);
-    encLF->enable(TIME_STEP);
-
-    DistanceSensor* dsFront = robot->getDistanceSensor("ds_front");
-    DistanceSensor* dsBack = robot->getDistanceSensor("ds_back");
-    dsFront->enable(TIME_STEP);
-    dsBack->enable(TIME_STEP);
-
-    robot->step(TIME_STEP);
-
-    RobotDirection robotDirection = RobotDirection::Forward;
-
-    int stopStepsLeft = 0;
-    int turnStepsLeft = 0;
+    // state setup
+    RobotContext robotContext;
 
     // Main loop:
     while (robot->step(TIME_STEP) != -1) {
 
-        const double distFront = getWallDistance(dsFront, 0.02);
-
-        std::cout << "wall front: " << distFront << " m" << std::endl;
-
-        robotDirection = decideDirection(distFront, COLLISION_DISTANCE, stopStepsLeft, turnStepsLeft);
-        moveRobot(robotDirection, leftBackMotor, rightBackMotor, rightFrontMotor, leftFrontMotor, 0.5 * MAX_SPEED);
-
+        double distanceTravelled = getDistanceTravelled(robotSensors);
+        updateState(robot, &robotContext, robotSensors, distanceTravelled);
+        executeState(robotContext, robotSensors, robotMotors);
     };
 
     delete robot;
