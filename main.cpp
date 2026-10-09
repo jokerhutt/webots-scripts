@@ -5,6 +5,7 @@
 // stdlib
 #include <iostream>
 #include <cmath>
+#include <algorithm>
 
 // own headers
 #include "config.hpp"
@@ -68,14 +69,14 @@ void updateState(Robot* robot, RobotContext* robotContext, RobotSensors sensors,
         // if driving
         case RobotState::DRIVING:
             // if no wall to the right
-            if (distRight > COLLISION_DISTANCE) {
+            if (distRight > 0.4) {
                 robotContext->state = RobotState::PREPARING_RIGHT_TURN;
-                robotContext->stateStartTime = distanceTravelled;
+                robotContext->stateStartDistance = distanceTravelled;
                 // else if wall in front
-            } else if (distFront < COLLISION_DISTANCE) {
+            } else if (distFront + 0.105 <= distRight + 0.04) {
                 robotContext->state = RobotState::BRAKING;
                 // if no wall to left
-                if (distLeft > COLLISION_DISTANCE) {
+                if (distLeft > 0.4) {
                     robotContext->nextState = RobotState::TURNING_LEFT;
                     // else turn around
                 } else {
@@ -92,15 +93,15 @@ void updateState(Robot* robot, RobotContext* robotContext, RobotSensors sensors,
 
                 switch (robotContext->nextState) {
                     case RobotState::TURNING_RIGHT:
-                        robotContext->targetHeading = heading - M_PI / 2.0;
+                        robotContext->targetHeading = std::round((heading - M_PI / 2.0) / (M_PI / 2.0)) * (M_PI / 2.0);
                         break;
 
                     case RobotState::TURNING_LEFT:
-                        robotContext->targetHeading = heading + M_PI / 2.0;
+                        robotContext->targetHeading = std::round((heading + M_PI / 2.0) / (M_PI / 2.0)) * (M_PI / 2.0);
                         break;
 
                     case RobotState::TURNING_AROUND:
-                        robotContext->targetHeading = heading + M_PI;
+                        robotContext->targetHeading = std::round((heading + M_PI) / (M_PI / 2.0)) * (M_PI / 2.0);
                         break;
 
                     default:
@@ -144,14 +145,10 @@ void executeState(const RobotContext& context, const RobotSensors& sensors, cons
     switch (context.state) {
 
         case RobotState::DRIVING: {
-            double distRight = getWallDistance(sensors.right, 0.02);
-            double correction = calculateWallCorrection(distRight);
+            double heading = sensors.imu->getRollPitchYaw()[2];
+            double error = std::remainder(context.targetHeading - heading, 2.0 * M_PI);
 
-            setMotorSpeeds(
-                motors,
-                std::clamp(BASE_SPEED + correction, 0.0, MAX_SPEED),
-                std::clamp(BASE_SPEED - correction, 0.0, MAX_SPEED)
-            );
+            setMotorSpeeds(motors, BASE_SPEED - 5.0 * error, BASE_SPEED + 5.0 * error);
             break;
         }
 
@@ -191,6 +188,7 @@ int main(int argc, char **argv) {
 
     // state setup
     RobotContext robotContext;
+    robotContext.targetHeading = robotSensors.imu->getRollPitchYaw()[2];
 
     // Main loop:
     while (robot->step(TIME_STEP) != -1) {
@@ -198,6 +196,11 @@ int main(int argc, char **argv) {
         double distanceTravelled = getDistanceTravelled(robotSensors);
         updateState(robot, &robotContext, robotSensors, distanceTravelled);
         executeState(robotContext, robotSensors, robotMotors);
+
+        std::cout << (int)robotContext.state << "  F:" << robotSensors.front->getValue()
+          << "  L:" << robotSensors.left->getValue()
+          << "  R:" << robotSensors.right->getValue() << std::endl;
+
     };
 
     delete robot;
