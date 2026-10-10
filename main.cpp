@@ -69,11 +69,11 @@ void updateState(Robot* robot, RobotContext* robotContext, RobotSensors sensors,
         // if driving
         case RobotState::DRIVING:
             // if no wall to the right
-            if (distRight > 0.4) {
+            if (distRight > 0.4 && distanceTravelled - robotContext->stateStartDistance >= 0.2) {
                 robotContext->state = RobotState::PREPARING_RIGHT_TURN;
                 robotContext->stateStartDistance = distanceTravelled;
                 // else if wall in front
-            } else if (distFront + 0.105 <= distRight + 0.04) {
+            } else if (distFront + 0.105 <= std::min(distRight, 0.2) + 0.04) {
                 robotContext->state = RobotState::BRAKING;
                 // if no wall to left
                 if (distLeft > 0.4) {
@@ -113,7 +113,7 @@ void updateState(Robot* robot, RobotContext* robotContext, RobotSensors sensors,
             break;
 
         case RobotState::PREPARING_RIGHT_TURN:
-            if (distanceTravelled - robotContext->stateStartDistance >= 0.05) {
+            if (distanceTravelled - robotContext->stateStartDistance >= 0.2) {
                 robotContext->state = RobotState::BRAKING;
                 robotContext->nextState = RobotState::TURNING_RIGHT;
                 robotContext->stateStartTime = robot->getTime();
@@ -132,6 +132,7 @@ void updateState(Robot* robot, RobotContext* robotContext, RobotSensors sensors,
 
             if (std::abs(headingError) < 0.03) {
                 robotContext->state = RobotState::DRIVING;
+                robotContext->stateStartDistance = distanceTravelled;
             }
             break;
         }
